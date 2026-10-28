@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AST-LLM Image VM — 簡易版</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         background: #f5f5f5; color: #333; }
+  header { background: #1a1a2e; color: #eee; padding: 16px 20px; }
+  header h1 { font-size: 18px; font-weight: 600; }
+  header p { font-size: 12px; color: #9aa; margin-top: 4px; }
+  main { max-width: 1080px; margin: 0 auto; padding: 20px; display: grid;
+         grid-template-columns: 340px 1fr; gap: 20px; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; } }
+  .card { background: #fff; border-radius: 10px; padding: 18px;
+          box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  .card h2 { font-size: 14px; margin-bottom: 12px; color: #1a1a2e; }
+  label { display: block; font-size: 12px; color: #666; margin: 12px 0 6px; }
+  label:first-of-type { margin-top: 0; }
+  textarea, select, input { width: 100%; padding: 9px 10px; border: 1px solid #ccc;
+    border-radius: 6px; font-size: 14px; font-family: inherit; background: #fff; }
+  textarea { resize: vertical; min-height: 74px; }
+  button { width: 100%; margin-top: 16px; padding: 11px; border: 0; border-radius: 6px;
+    background: #2f6fed; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button:disabled { background: #9db9ee; cursor: wait; }
+  .hint { font-size: 11px; color: #888; margin-top: 10px; line-height: 1.5; }
+  .error { display: none; margin-top: 12px; padding: 10px; border-radius: 6px;
+    background: #fdecec; color: #a33; font-size: 13px; }
+  .result-img { width: 100%; border-radius: 8px; background: #ddd; display: none; }
+  .placeholder { padding: 48px 0; text-align: center; color: #999; font-size: 13px;
+    border: 1px dashed #ccc; border-radius: 8px; }
+  .score-panel { margin-top: 14px; background: #0d0d17; color: #cfd8dc; border-radius: 8px;
+    padding: 14px 16px; font-family: "Courier New", monospace; display: none; }
+  .score-row { display: flex; align-items: center; gap: 10px; margin: 7px 0; font-size: 12px; }
+  .score-row .name { width: 86px; color: #8bc34a; }
+  .bar { flex: 1; height: 10px; background: #263238; border-radius: 5px; overflow: hidden; }
+  .bar > div { height: 100%; background: #00c853; width: 0%; transition: width .4s; }
+  .score-row .val { width: 46px; text-align: right; }
+  .verdict { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 11px;
+    font-weight: 700; margin-left: 8px; }
+  .verdict.pass { background: #1b5e20; color: #a5d6a7; }
+  .verdict.retry { background: #5d4037; color: #ffccbc; }
+  .meta { font-size: 11px; color: #78909c; margin-top: 10px; word-break: break-all; line-height: 1.6; }
+  .stats { font-size: 12px; color: #555; margin-bottom: 12px; }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 10px; }
+  .gallery figure { border-radius: 8px; overflow: hidden; background: #eee; cursor: pointer; }
+  .gallery img { width: 100%; display: block; aspect-ratio: 1; object-fit: cover; }
+  .gallery figcaption { font-size: 10px; padding: 5px 7px; color: #555; background: #fff;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AST-LLM Image VM — 簡易版</h1>
+  <p>生成 → RGB/FFT/ベクトル解析 → スコア → 調整・再実行のVMサイクル（エンジン: ダミー、スコア: 仮スコア）</p>
+</header>
+<main>
+  <section class="card">
+    <h2>生成条件</h2>
+    <form id="gen-form">
+      <label for="prompt">プロンプト（色語を含めると目標色になります）</label>
+      <textarea id="prompt" required>青い空と赤い屋根の家</textarea>
+      <label for="size">サイズ</label>
+      <select id="size">
+        <option value="512x512" selected>512 × 512</option>
+        <option value="768x512">768 × 512</option>
+        <option value="512x768">512 × 768</option>
+        <option value="1024x1024">1024 × 1024</option>
+      </select>
+      <label for="style">スタイル</label>
+      <select id="style">
+        <option value="vivid" selected>vivid（鮮やか）</option>
+        <option value="natural">natural（自然）</option>
+      </select>
+      <label for="seed">シード</label>
+      <input id="seed" type="number" value="42" min="0">
+      <button id="gen-btn" type="submit">生成する</button>
+      <div class="error" id="error"></div>
+    </form>
+    <p class="hint">制御は AST-LLM（プロンプトAST化＋不変条件チェック）、記録は SQLite＋ハッシュチェーンです。再試行は最大1回まで自動で行われます。</p>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>生成結果</h2>
+      <div class="placeholder" id="placeholder">まだ生成していません</div>
+      <img class="result-img" id="result-img" alt="生成画像">
+      <div class="score-panel" id="score-panel">
+        <div class="score-row"><span class="name">TOTAL</span><div class="bar"><div id="bar-total"></div></div><span class="val" id="val-total">-</span><span class="verdict" id="verdict"></span></div>
+        <div class="score-row"><span class="name">COLOR</span><div class="bar"><div id="bar-color"></div></div><span class="val" id="val-color">-</span></div>
+        <div class="score-row"><span class="name">SHARP</span><div class="bar"><div id="bar-sharp"></div></div><span class="val" id="val-sharp">-</span></div>
+        <div class="score-row"><span class="name">BALANCE</span><div class="bar"><div id="bar-balance"></div></div><span class="val" id="val-balance">-</span></div>
+        <div class="meta" id="score-meta"></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:20px;">
+      <h2>ギャラリー</h2>
+      <div class="stats" id="stats">読み込み中…</div>
+      <div class="gallery" id="gallery"></div>
+    </div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+
+function setBar(name, value) {
+  $("bar-" + name).style.width = Math.round(value * 100) + "%";
+  $("val-" + name).textContent = value.toFixed(3);
+}
+
+async function loadGallery() {
+  const [g, s, c] = await Promise.all([
+    fetch("/api/gallery").then(r => r.json()),
+    fetch("/api/gallery/stats").then(r => r.json()),
+    fetch("/api/chain/verify").then(r => r.json()),
+  ]);
+  $("stats").textContent =
+    `件数 ${s.count} / 平均スコア ${s.avg_score ?? "-"} / pass ${s.pass} / ` +
+    `チェーン検証 ${c.ok ? "OK (" + c.checked + "件)" : "NG"}`;
+  $("gallery").innerHTML = g.items.map(it => `
+    <figure data-id="${it.id}">
+      <img src="${it.image_url}" alt="">
+      <figcaption>#${it.id} ${it.prompt} — ${it.score.total.toFixed(2)}</figcaption>
+    </figure>`).join("");
+  document.querySelectorAll(".gallery figure").forEach(f => {
+    f.addEventListener("click", () => showDetail(Number(f.dataset.id)));
+  });
+}
+
+async function showDetail(id) {
+  const d = await fetch("/api/gallery/" + id).then(r => r.json());
+  if (d.status !== "success") return;
+  $("placeholder").style.display = "none";
+  const img = $("result-img");
+  img.src = d.image_url; img.style.display = "block";
+  $("score-panel").style.display = "block";
+  setBar("total", d.score.total); setBar("color", d.score.color_score);
+  setBar("sharp", d.score.sharp_score); setBar("balance", d.score.balance_score);
+  const v = $("verdict");
+  v.textContent = d.verdict.toUpperCase();
+  v.className = "verdict " + (d.verdict === "pass" ? "pass" : "retry");
+  $("score-meta").textContent =
+    `#${d.id} / 反復 ${d.iterations} 回 / 色スコア根拠: ${d.score.color_basis} / hash ${d.hash.slice(0, 16)}…`;
+}
+
+$("gen-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = $("gen-btn"), err = $("error");
+  btn.disabled = true; btn.textContent = "生成中…"; err.style.display = "none";
+  try {
+    const res = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: $("prompt").value,
+        size: $("size").value,
+        style: $("style").value,
+        seed: Number($("seed").value || 42),
+      }),
+    });
+    const d = await res.json();
+    if (d.status !== "success") throw new Error(d.error || "生成に失敗しました");
+    await loadGallery();
+    await showDetail(d.id);
+  } catch (ex) {
+    err.textContent = ex.message; err.style.display = "block";
+  } finally {
+    btn.disabled = false; btn.textContent = "生成する";
+  }
+});
+
+loadGallery().catch(() => { $("stats").textContent = "読み込みに失敗しました"; });
+</script>
+</body>
+</html>
