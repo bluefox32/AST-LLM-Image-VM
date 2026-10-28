@@ -1,0 +1,9 @@
+# AST-LLM Image VM (簡易版) 依存ライブラリ
+flask>=3.0
+numpy>=1.24
+pillow>=10.0
+
+# ローカルSDエンジン接続時に追加 (簡易版では未使用)
+# torch
+# diffusers
+# transformers
