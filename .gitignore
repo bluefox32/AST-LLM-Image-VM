@@ -1,0 +1,11 @@
+# 実行時データ (生成画像とDBはローカル管理)
+app/data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
