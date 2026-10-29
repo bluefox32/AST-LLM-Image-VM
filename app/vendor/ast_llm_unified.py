@@ -448,7 +448,9 @@ class ASTLLMUnified:
                 emb_doc = self.embedding.forward(ids_doc)
                 for head in self.heads:
                     _, weights = head.forward(emb, emb_doc)
-                    resp = weights.mean(axis=0) @ emb_doc.mean(axis=0)
+                    # 修正(2026-10-29): weights.mean(axis=0) は文書トークン数次元なので、
+                    # 平均済みベクトルではなく emb_doc 本体 [doc_len, d_model] と内積する
+                    resp = weights.mean(axis=0) @ emb_doc
                     response_vecs.append(resp)
         
         if not response_vecs:
