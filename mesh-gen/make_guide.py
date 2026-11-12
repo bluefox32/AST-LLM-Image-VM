@@ -1,4 +1,5 @@
 """Build one depth-guide PNG for the head-proxy mesh at a given angle index.
+v2: depth is Gaussian-smoothed (radius 2) to remove flat-face steps.
 Replicates the Colab v2/v3 notebook guide cell exactly (same mesh, camera,
 projection) so guides are reproducible from source on any machine.
 Angle index 0..7 -> 0,45,...,315 degrees.
@@ -55,7 +56,7 @@ def main():
     fc = vc[faces_arr]
     cents = fc.mean(axis=1)
     order = np.argsort(-cents[:, 2])
-    im = Image.new("L", (W, H), 0)
+    im = Image.new("L", (W, H), 0)  # v2: depth is smoothed before saving (see below)
     dr = ImageDraw.Draw(im)
     dmin, dmax = vc[:, 2].min(), vc[:, 2].max()
     for f_i in order:
@@ -64,6 +65,10 @@ def main():
             continue
         g = int(255 * (1 - (cents[f_i][2] - dmin) / (dmax - dmin)))
         dr.polygon([(px[j], py[j]) for j in faces_arr[f_i]], fill=g)
+    # v2 fix: smooth the flat-face depth steps so the generator does not
+    # read the faceting as a tile pattern (v1 result: disco-ball surface).
+    from PIL import ImageFilter
+    im = im.filter(ImageFilter.GaussianBlur(radius=2))
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     im.save(args.out)
     print(f"guide index {args.index} (angle {ang}) -> {args.out}")
