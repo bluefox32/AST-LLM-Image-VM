@@ -9,6 +9,8 @@ palette_boost (0.0-1.0) が加わったもの。
 from __future__ import annotations
 
 import hashlib
+import os
+import time
 
 import numpy as np
 from PIL import Image
@@ -111,3 +113,109 @@ class SDEngineStub:
             "SDエンジンは簡易版では未接続です。diffusers とモデル重みを用意し、"
             "このクラスの generate を実装して server.py の ENGINE を差し替えてください。"
         )
+
+
+class SDEngine:
+    """ローカルSD (diffusers) エンジン。SDEngineStub が示した差し替え席の実装。
+
+    重い依存 (torch / diffusers) とモデル重みは初回 generate で遅延ロード
+    するので、DummyEngine だけの軽量運用には影響しない。生成条件
+    (チェックポイント / steps / guidance / ネガティブ) はエンジン側の
+    構築時設定であり、params (プロンプトコンパイラの出力) には混ぜない。
+    チェックポイントの取得は mesh-gen の generate_one.py と同じ方法
+    (Civitai の版別ダウンロード、匿名で可) で、既定は AbyssOrangeMix2 SFW
+    (Civitai model 4437 / version 5021)。
+    """
+
+    name = "sd-local"
+
+    DEFAULT_CKPT_URL = "https://civitai.com/api/download/models/5021"
+    DEFAULT_MODEL_LABEL = "abyssorangemix2-sfw (civitai 4437@5021)"
+    DEFAULT_NEGATIVE = (
+        "blurry, deformed, extra limbs, text, watermark, realistic, photo"
+    )
+    _UA = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+        )
+    }
+
+    def __init__(
+        self,
+        ckpt_path: str | None = None,
+        ckpt_url: str | None = None,
+        steps: int = 20,
+        guidance: float = 7.0,
+        negative: str = DEFAULT_NEGATIVE,
+        model_label: str = DEFAULT_MODEL_LABEL,
+    ):
+        self.ckpt_path = ckpt_path or os.environ.get("IMAGE_VM_SD_CKPT") or os.path.join(
+            os.path.expanduser("~"), ".cache", "image-vm", "aom2_sfw_fp16.safetensors"
+        )
+        self.ckpt_url = ckpt_url or self.DEFAULT_CKPT_URL
+        self.steps = int(steps)
+        self.guidance = float(guidance)
+        self.negative = negative
+        self.model_label = model_label
+        self._pipe = None
+
+    def _ensure_ckpt(self) -> str:
+        if os.path.exists(self.ckpt_path) and os.path.getsize(self.ckpt_path) > 1_000_000_000:
+            return self.ckpt_path
+        import urllib.request
+
+        os.makedirs(os.path.dirname(self.ckpt_path), exist_ok=True)
+        req = urllib.request.Request(self.ckpt_url, headers=self._UA)
+        with urllib.request.build_opener().open(req, timeout=120) as r, open(
+            self.ckpt_path, "wb"
+        ) as f:
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+        return self.ckpt_path
+
+    def _load(self):
+        if self._pipe is not None:
+            return self._pipe
+        import torch
+        from diffusers import StableDiffusionPipeline, UniPCMultistepScheduler
+
+        ckpt = self._ensure_ckpt()
+        pipe = StableDiffusionPipeline.from_single_file(
+            ckpt,
+            torch_dtype=torch.float32,
+            safety_checker=None,
+            requires_safety_checker=False,
+        )
+        pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
+        self._pipe = pipe
+        return pipe
+
+    def generate(self, params: dict) -> tuple[Image.Image, dict]:
+        import torch
+
+        w, h = (int(v) for v in params["size"].split("x"))
+        seed = int(params["seed"])
+        pipe = self._load()
+        started = time.perf_counter()
+        image = pipe(
+            params["prompt"],
+            negative_prompt=self.negative,
+            width=w,
+            height=h,
+            num_inference_steps=self.steps,
+            guidance_scale=self.guidance,
+            generator=torch.Generator("cpu").manual_seed(seed),
+        ).images[0]
+        meta = {
+            "engine": self.name,
+            "model": self.model_label,
+            "seed_used": seed,
+            "palette_boost": params.get("palette_boost", 0.0),
+            "seconds": round(time.perf_counter() - started, 3),
+            "cost": 0.0,
+        }
+        return image, meta
