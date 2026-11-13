@@ -37,8 +37,16 @@ if _pool_workers > 1:
     vm = ImageVM(pool=EnginePool(workers=_pool_workers))
     ENGINE_MODE = f"pool x{_pool_workers}"
 else:
-    vm = ImageVM()
-    ENGINE_MODE = "single"
+    # 環境変数 IMAGE_VM_ENGINE=sd で実SDエンジン (engines.SDEngine) に差し替え。
+    # 既定は DummyEngine のまま (軽量運用に影響しない)。
+    if os.environ.get("IMAGE_VM_ENGINE") == "sd":
+        import engines
+
+        vm = ImageVM(engine=engines.SDEngine())
+        ENGINE_MODE = "single (sd)"
+    else:
+        vm = ImageVM()
+        ENGINE_MODE = "single"
 
 
 @app.get("/")
