@@ -1,0 +1,30 @@
+name: plain-gen
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: [1234, 42, 777, 2024]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (pinned, same as mesh-gen)
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install diffusers==0.32.2 transformers==4.48.3 accelerate==1.3.0 safetensors pillow numpy
+      - name: Run plain generation check (CPU, 512x512, 20 steps, no guide)
+        working-directory: app
+        run: python run_plain_check.py --seed ${{ matrix.seed }} --engine sd --out-dir plain_out
+      - name: Upload plain artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: plain-${{ matrix.seed }}
+          path: app/plain_out/
