@@ -16,22 +16,57 @@ import numpy as np
 from PIL import Image
 
 
+def _db_lookup(db, prompt: str):
+    """エンジン側 DB (engine_db) の参照と meta 断片。db=None なら空。"""
+    if db is None:
+        return None, {}
+    import engine_db
+
+    ctx = engine_db.db_context(db, prompt)
+    meta = {
+        "db_hit": ctx["status"] in ("hit", "recovered"),
+        "db_status": "corrupt_fallback" if ctx["status"] == "corrupt" else ctx["status"],
+        "db_version": ctx["version"],
+        "db_key": engine_db.key_for_prompt(prompt)[:12],
+    }
+    return ctx, meta
+
+
 class DummyEngine:
     """ダミーエンジン。
 
     シードとプロンプトから決定的に、グラデーション＋柔らかい円＋粒子ノイズの
     画像を合成する。実モデルではないが、色分布・周波数・ブロック特徴といった
     解析対象としては本物と同じ性質 (測定可能なRGB配列) を持つ。
+
+    db (engine_db.EngineDB) を渡すと、プロンプトのキーで登録済みパレット
+    (kind="palette") を引き、当たれば目標色をその登録内容で置き換える。
+    外れ・破損時は従来動作に落ち、meta の db_status に残る。db=None の
+    ときは従来と完全に同一動作 (meta にも何も足さない)。
     """
 
     name = "dummy"
+
+    def __init__(self, db=None):
+        self.db = db
 
     def generate(self, params: dict) -> tuple[Image.Image, dict]:
         w, h = (int(v) for v in params["size"].split("x"))
         seed = int(params["seed"])
         rng = np.random.default_rng(seed)
 
-        palette = self._palette(params, rng)
+        ctx, db_meta = _db_lookup(self.db, params["prompt"])
+        eff = params
+        if (
+            ctx is not None
+            and ctx["status"] in ("hit", "recovered")
+            and ctx["kind"] == "palette"
+            and ctx["payload"]
+        ):
+            eff = dict(params)
+            eff["target_colors"] = [list(c) for c in ctx["payload"].get("target_colors", [])]
+
+        palette = self._palette(eff, rng)
         yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
         xn, yn = xx / max(w - 1, 1), yy / max(h - 1, 1)
 
@@ -66,6 +101,7 @@ class DummyEngine:
             "palette_boost": params.get("palette_boost", 0.0),
             "seconds": 0.0,
             "cost": 0.0,
+            **db_meta,
         }
         return image, meta
 
@@ -149,6 +185,7 @@ class SDEngine:
         guidance: float = 7.0,
         negative: str = DEFAULT_NEGATIVE,
         model_label: str = DEFAULT_MODEL_LABEL,
+        db=None,
     ):
         self.ckpt_path = ckpt_path or os.environ.get("IMAGE_VM_SD_CKPT") or os.path.join(
             os.path.expanduser("~"), ".cache", "image-vm", "aom2_sfw_fp16.safetensors"
@@ -158,6 +195,7 @@ class SDEngine:
         self.guidance = float(guidance)
         self.negative = negative
         self.model_label = model_label
+        self.db = db  # engine_db.EngineDB (v1 では参照と meta 記録のみ)
         self._pipe = None
 
     def _ensure_ckpt(self) -> str:
@@ -210,6 +248,7 @@ class SDEngine:
             guidance_scale=self.guidance,
             generator=torch.Generator("cpu").manual_seed(seed),
         ).images[0]
+        _, db_meta = _db_lookup(self.db, params["prompt"])
         meta = {
             "engine": self.name,
             "model": self.model_label,
@@ -217,5 +256,6 @@ class SDEngine:
             "palette_boost": params.get("palette_boost", 0.0),
             "seconds": round(time.perf_counter() - started, 3),
             "cost": 0.0,
+            **db_meta,
         }
         return image, meta
